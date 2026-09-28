@@ -8,6 +8,7 @@ import { CompanyPreparation } from './components/CompanyPreparation';
 import { InterviewPreparation } from './components/InterviewPreparation';
 import { ResumeBuilder } from './components/ResumeBuilder';
 import { AdminDashboard } from './components/AdminDashboard';
+import { N8nChatbot } from './components/N8nChatbot';
 import { GraduationCap, Sparkles, ShieldCheck, Heart } from 'lucide-react';
 
 const MainPortalContent: React.FC = () => {
@@ -115,6 +116,9 @@ const MainPortalContent: React.FC = () => {
         defaultRole={authModalState.role}
         defaultMode={authModalState.mode}
       />
+
+      {/* Floating n8n AI Chatbot */}
+      <N8nChatbot />
     </div>
   );
 };
