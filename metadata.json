@@ -1,0 +1,6 @@
+{
+  "name": "NexPlace - Tech & Campus Placement Portal",
+  "description": "Comprehensive placement preparation platform with B.Tech topic notes, company-wise preparation, interactive quizzes, interview readiness, resume builder, and student & admin dashboards.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
