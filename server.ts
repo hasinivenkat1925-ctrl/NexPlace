@@ -41,11 +41,11 @@ async function startServer() {
       let n8nError: string | null = null;
       let n8nReply: string | null = null;
 
-      // 1. If webhookUrl is provided and mode !== 'ai-only', call n8n cloud webhook with a short timeout
+      // 1. If webhookUrl is provided and mode !== 'ai-only', call n8n cloud webhook with a generous 25s timeout
       if (webhookUrl && mode !== 'ai-only') {
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 3000);
+          const timeoutId = setTimeout(() => controller.abort(), 25000); // 25s for complex AI workflows
 
           const n8nRes = await fetch(webhookUrl, {
             method: 'POST',
@@ -93,16 +93,16 @@ async function startServer() {
           } else {
             const errData: any = await n8nRes.json().catch(() => null);
             if (n8nRes.status === 404 && errData?.message?.includes('not registered')) {
-              n8nError = 'Your n8n workflow is currently inactive. In your n8n dashboard (hasinivenkat09.app.n8n.cloud), turn ON the "Active" toggle switch in the top-right corner to route calls through your n8n nodes.';
+              n8nError = 'Your n8n workflow is currently inactive. In your n8n dashboard (hasinivenkat09.app.n8n.cloud), turn ON the "Active" toggle switch in the top-right corner.';
             } else {
               n8nError = `n8n status ${n8nRes.status}: ${errData?.message || n8nRes.statusText}`;
             }
           }
         } catch (err: any) {
           if (err.name === 'AbortError') {
-            n8nError = 'n8n webhook did not respond within 3s. Switched to NexPlace Placement AI.';
+            n8nError = 'n8n webhook took over 25 seconds to reply.';
           } else {
-            n8nError = `Could not connect to n8n webhook (${err.message}). Switched to NexPlace Placement AI.`;
+            n8nError = `Could not connect to n8n webhook: ${err.message || String(err)}`;
           }
         }
       }
@@ -110,9 +110,18 @@ async function startServer() {
       // If n8n gave a valid non-empty response, return it directly
       if (n8nReply && n8nReply.trim()) {
         return res.json({
-          reply: n8nReply,
+          reply: n8nReply.trim(),
           source: 'n8n',
           n8nNotice: null
+        });
+      }
+
+      // If user explicitly selected 'n8n-only' and n8n failed or was empty
+      if (mode === 'n8n-only') {
+        return res.json({
+          reply: `⚠️ n8n workflow did not return a response.\n\n**Reason:** ${n8nError || 'Empty output from n8n node'}.\n\nPlease ensure your workflow in hasinivenkat09.app.n8n.cloud has the "Active" switch turned ON and the Chat/Webhook node is connected to an Agent output.`,
+          source: 'n8n',
+          n8nNotice: n8nError
         });
       }
 
@@ -132,9 +141,11 @@ Formatting rules:
 - Be concise, accurate, and encouraging.`;
 
       let aiReply = '';
-      
-      // Use 'gemini-3.1-flash-lite' as primary (fast & reliable) and 'gemini-flash-latest' as fallback
-      for (const modelName of ['gemini-3.1-flash-lite', 'gemini-flash-latest']) {
+      let quotaExhausted = false;
+
+      // Avoid gemini-3.8-flash since its quota limit (25M tokens) is exhausted.
+      // Use gemini-3.1-flash-lite or gemini-2.5-flash.
+      for (const modelName of ['gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-flash-latest']) {
         try {
           const response = await ai.models.generateContent({
             model: modelName,
@@ -148,13 +159,22 @@ Formatting rules:
             break;
           }
         } catch (err: any) {
-          console.warn(`Model ${modelName} error:`, err.message || err);
-          await sleep(300);
+          const errStr = (err?.message || String(err)).toLowerCase();
+          if (errStr.includes('resource_exhausted') || errStr.includes('quota') || errStr.includes('429')) {
+            quotaExhausted = true;
+          }
+          console.warn(`Model ${modelName} error:`, err?.message || err);
+          await sleep(200);
         }
       }
 
+      // If AI models encountered quota limits and n8n was not reachable, provide an informative contextual answer
       if (!aiReply) {
-        aiReply = `I understand you are asking about "${query}". Here is a breakdown of the key concepts and recommendations:\n- Review the relevant B.Tech notes and practice questions in the **Topic Preparation** or **Company Preparation** tabs.\n- If you need a specific code snippet or formula, please ask and I will generate it!`;
+        if (quotaExhausted) {
+          aiReply = `### Placement Knowledge Base Response\n\nYou asked about: **"${query}"**\n\n*(Notice: Google Gemini API quota for the day is currently limited; your primary **n8n Cloud Chatbot** is connected to handle live queries)*.\n\nHere are the core placement preparation recommendations:\n1. **Topic Preparation**: Check the *Topic Preparation* tab for full lecture notes, curated YouTube classes, and interactive quizzes for DSA, OS, DBMS, Networks, and OOPs.\n2. **Company PYQs**: Head to *Company Preparation* to view real interview coding questions and hiring patterns for Google, Amazon, TCS, Microsoft, and more.\n3. **Interview & STAR**: Use the *Interview Preparation* tab to practice behavioral responses and the Mock Simulator.\n\n*Tip: Turn on the **"Active"** toggle in your n8n cloud canvas (hasinivenkat09.app.n8n.cloud) so your custom n8n AI agent answers every query directly without rate limits!*`;
+        } else {
+          aiReply = `I understand you are asking about **"${query}"**.\n\nKey placement prep tips:\n- Review the corresponding concepts in the **Topic Preparation** or **Company Preparation** tabs for step-by-step algorithms, complexity analysis, and practice problems.\n- Feel free to rephrase or ask for a specific code solution!`;
+        }
       }
 
       return res.json({
@@ -164,8 +184,12 @@ Formatting rules:
       });
     } catch (error: any) {
       console.error('Error in /api/chat:', error);
+      const errMessage = typeof error === 'object' 
+        ? (error?.message || JSON.stringify(error)) 
+        : String(error);
+
       return res.status(500).json({
-        error: error.message || 'Internal server error while processing question',
+        error: errMessage,
         source: 'error'
       });
     }

@@ -158,9 +158,9 @@ export const N8nChatbot: React.FC = () => {
         })
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => null);
 
-      if (response.ok && data.reply) {
+      if (response.ok && data && data.reply) {
         if (data.n8nNotice) {
           setStatusNotice(data.n8nNotice);
         } else {
@@ -177,16 +177,23 @@ export const N8nChatbot: React.FC = () => {
 
         setMessages(prev => [...prev, botMessage]);
       } else {
-        throw new Error(data.error || 'Failed to generate response.');
+        const errorText = data?.error
+          ? (typeof data.error === 'object' ? (data.error.message || JSON.stringify(data.error)) : String(data.error))
+          : 'Unable to reach response server. Please try again.';
+        throw new Error(errorText);
       }
     } catch (err: any) {
       console.error('Chat error:', err);
+      const cleanError = err?.message && err.message !== '[object Object]'
+        ? err.message
+        : (typeof err === 'object' ? JSON.stringify(err) : String(err || 'Connection issue'));
+
       const errorMessage: ChatMessage = {
         id: 'msg-' + Date.now() + '-err',
         sender: 'bot',
         source: 'ai',
         isError: true,
-        text: `Error processing request: ${err.message}. Please check your connection or switch to Direct AI mode.`,
+        text: `Error processing request: ${cleanError}.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       setMessages(prev => [...prev, errorMessage]);
