@@ -137,6 +137,105 @@ export const N8nChatbot: React.FC = () => {
     setInputValue('');
     setIsLoading(true);
 
+    const userMeta = {
+      userId: currentUser?.id || 'guest',
+      userName: currentUser?.name || 'Aspirant',
+      role: currentUser?.role || 'student',
+      branch: currentUser?.branch || 'Computer Science'
+    };
+
+    // 1. Try Direct n8n Webhook call from browser first (Works everywhere: Vercel, Netlify, Preview, Localhost)
+    if (chatMode !== 'ai-only' && webhookUrl.trim()) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 25000); // 25s for n8n AI agent
+
+        const n8nRes = await fetch(webhookUrl.trim(), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/plain, */*'
+          },
+          body: JSON.stringify({
+            action: 'sendMessage',
+            chatInput: text,
+            message: text,
+            query: text,
+            question: text,
+            sessionId,
+            metadata: userMeta
+          }),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (n8nRes.ok) {
+          const contentType = n8nRes.headers.get('content-type') || '';
+          let n8nReply = '';
+
+          if (contentType.includes('application/json')) {
+            const data: any = await n8nRes.json();
+            if (typeof data === 'string') {
+              n8nReply = data;
+            } else if (data.output) {
+              n8nReply = typeof data.output === 'string' ? data.output : JSON.stringify(data.output);
+            } else if (data.response) {
+              n8nReply = typeof data.response === 'string' ? data.response : JSON.stringify(data.response);
+            } else if (data.text) {
+              n8nReply = data.text;
+            } else if (Array.isArray(data) && data[0]?.output) {
+              n8nReply = typeof data[0].output === 'string' ? data[0].output : JSON.stringify(data[0].output);
+            } else if (Array.isArray(data) && data[0]?.text) {
+              n8nReply = data[0].text;
+            } else if (data.message && !data.code) {
+              n8nReply = data.message;
+            } else {
+              n8nReply = JSON.stringify(data, null, 2);
+            }
+          } else {
+            n8nReply = await n8nRes.text();
+          }
+
+          if (n8nReply && n8nReply.trim()) {
+            setStatusNotice(null);
+            const botMessage: ChatMessage = {
+              id: 'msg-' + Date.now() + '-bot',
+              sender: 'bot',
+              source: 'n8n',
+              text: n8nReply.trim(),
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            };
+            setMessages(prev => [...prev, botMessage]);
+            setIsLoading(false);
+            return;
+          }
+        } else {
+          const errData = await n8nRes.json().catch(() => null);
+          if (n8nRes.status === 404 && errData?.message?.includes('not registered')) {
+            setStatusNotice('Your n8n workflow is currently inactive. In hasinivenkat09.app.n8n.cloud, turn ON the "Active" toggle switch in the top-right corner.');
+          }
+        }
+      } catch (directErr: any) {
+        console.warn('Direct n8n call skipped to fallback:', directErr?.message || directErr);
+      }
+    }
+
+    // If n8n-only mode was selected and direct n8n failed
+    if (chatMode === 'n8n-only') {
+      const errorMessage: ChatMessage = {
+        id: 'msg-' + Date.now() + '-err',
+        sender: 'bot',
+        source: 'n8n',
+        isError: true,
+        text: `⚠️ Could not reach your n8n workflow.\n\nPlease check:\n1. Is your workflow in **hasinivenkat09.app.n8n.cloud** toggled to **"Active"** in the top-right corner?\n2. If testing in editor, switch to Test URL (/webhook-test/) in Chat Settings (⚙️).`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+      setMessages(prev => [...prev, errorMessage]);
+      setIsLoading(false);
+      return;
+    }
+
+    // 2. Fallback to /api/chat (Serverless or local server)
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -149,16 +248,15 @@ export const N8nChatbot: React.FC = () => {
           webhookUrl: webhookUrl.trim(),
           sessionId,
           mode: chatMode,
-          metadata: {
-            userId: currentUser?.id || 'guest',
-            userName: currentUser?.name || 'Aspirant',
-            role: currentUser?.role || 'student',
-            branch: currentUser?.branch || 'Computer Science'
-          }
+          metadata: userMeta
         })
       });
 
-      const data = await response.json().catch(() => null);
+      const responseText = await response.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(responseText);
+      } catch {}
 
       if (response.ok && data && data.reply) {
         if (data.n8nNotice) {
@@ -177,10 +275,27 @@ export const N8nChatbot: React.FC = () => {
 
         setMessages(prev => [...prev, botMessage]);
       } else {
-        const errorText = data?.error
-          ? (typeof data.error === 'object' ? (data.error.message || JSON.stringify(data.error)) : String(data.error))
-          : 'Unable to reach response server. Please try again.';
-        throw new Error(errorText);
+        // If 404 (e.g. Vercel static hosting where /api/chat is not mapped), provide an intelligent placement answer
+        const is404 = response.status === 404 || responseText.includes('could not be found');
+        
+        let fallbackReply = '';
+        if (is404) {
+          fallbackReply = `I received your question: **"${text}"**\n\n*(Notice: On Vercel, requests are routed directly to your **n8n Cloud Webhook**)*.\n\nTo enable instant answers on your live Vercel site:\n1. Open your workflow in [hasinivenkat09.app.n8n.cloud](https://hasinivenkat09.app.n8n.cloud).\n2. Switch the **"Active"** toggle in the top-right corner to **ON**.\n3. Send your question again and your custom n8n nodes will answer directly!`;
+        } else {
+          const errDetail = data?.error
+            ? (typeof data.error === 'object' ? (data.error.message || JSON.stringify(data.error)) : String(data.error))
+            : 'Unable to reach assistant.';
+          fallbackReply = `I received your question: **"${text}"**\n\nNotice: ${errDetail}\n\nPlease check your n8n workflow status or try again.`;
+        }
+
+        const botMessage: ChatMessage = {
+          id: 'msg-' + Date.now() + '-bot',
+          sender: 'bot',
+          source: 'ai',
+          text: fallbackReply,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        };
+        setMessages(prev => [...prev, botMessage]);
       }
     } catch (err: any) {
       console.error('Chat error:', err);
